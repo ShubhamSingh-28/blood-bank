@@ -55,11 +55,17 @@ const PublicInventory = () => {
                 hospital_id: hospitalId,
                 blood_group: bloodGroup
             });
+            console.log(res);
+            
             if (res.data.success) {
                 setMessage({ text: 'Request sent successfully!', type: 'success' });
+            } else {
+                setMessage({ text: res.data.message || 'Request failed', type: 'error' });
             }
         } catch (err) {
-            setMessage({ text: err.response?.data?.message || 'Request failed', type: 'error' });
+            console.log(err);
+            
+            setMessage({ text: err?.data?.message || 'Request failed', type: 'error' });
         }
         
         setTimeout(() => setMessage({ text: '', type: '' }), 5000);
