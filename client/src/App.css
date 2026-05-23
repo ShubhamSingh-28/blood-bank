@@ -1,0 +1,148 @@
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f4f4f4;
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+}
+
+.App {
+  width: 100%;
+}
+
+.auth-container {
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  max-width: 400px;
+  margin: auto;
+}
+
+.auth-form h2 {
+  text-align: center;
+  color: #d32f2f;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.form-group input, 
+.form-group select {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.radio-group {
+  display: flex;
+  gap: 1rem;
+}
+
+button {
+  width: 100%;
+  padding: 0.75rem;
+  background-color: #d32f2f;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+button:hover {
+  background-color: #b71c1c;
+}
+
+.error {
+  color: red;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.success {
+  color: green;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.dashboard-container nav {
+  background-color: #d32f2f;
+  color: white;
+  padding: 1rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: fixed;
+  top: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.dashboard-container nav h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.dashboard-container nav button {
+  width: auto;
+  padding: 0.5rem 1rem;
+  background: white;
+  color: #d32f2f;
+}
+
+.dashboard-container main {
+  margin-top: 5rem;
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+th, td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+}
+
+th {
+  background-color: #f8f8f8;
+}
+
+.inline-form {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.inline-form select, .inline-form input {
+  flex: 1;
+}
+
+.inline-form button {
+  width: auto;
+}
+
+.status-pending { color: #f39c12; font-weight: bold; }
+.status-approved { color: #27ae60; font-weight: bold; }
+.status-rejected { color: #e74c3c; font-weight: bold; }
+
+.approve-btn { background: #27ae60; width: auto; padding: 0.3rem 0.6rem; margin-right: 0.5rem; }
+.reject-btn { background: #e74c3c; width: auto; padding: 0.3rem 0.6rem; }
