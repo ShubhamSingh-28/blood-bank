@@ -1,84 +1,72 @@
 <?php
-header("Content-Type: application/json");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit; }
-
-include_once '../config/db.php';
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/db.php';
 
 class Inventory {
     private $conn;
+    public function __construct($db) { $this->conn = $db; }
 
-    public function __construct($db) {
-        $this->conn = $db;
+    public function publicList(): array {
+        $sql = "SELECT i.id AS inventory_id, i.blood_group, i.units,
+                       u.id AS hospital_id, u.name AS hospital_name, u.address
+                FROM blood_inventory i
+                JOIN users u ON u.id = i.hospital_id
+                WHERE i.units > 0 AND u.role = 'hospital'
+                ORDER BY u.name ASC, i.blood_group ASC";
+        return $this->conn->query($sql)->fetch_all(MYSQLI_ASSOC);
     }
 
-    public function getPublicInventory() {
-        $query = "SELECT i.id as inventory_id, i.blood_group, i.units, u.id as hospital_id, u.name as hospital_name, u.address 
-                  FROM blood_inventory i 
-                  JOIN users u ON i.hospital_id = u.id 
-                  WHERE i.units > 0 AND u.role = 'hospital'";
-        $result = $this->conn->query($query);
-        $data = [];
-        while ($row = $result->fetch_assoc()) {
-            $data[] = $row;
-        }
-        return ["success" => true, "data" => $data];
+    public function forHospital(int $hospitalId): array {
+        $stmt = $this->conn->prepare(
+            "SELECT id, blood_group, units FROM blood_inventory WHERE hospital_id = ? ORDER BY blood_group ASC"
+        );
+        $stmt->bind_param("i", $hospitalId);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     }
 
-    public function getHospitalInventory($hospital_id) {
-        $hospital_id = $this->conn->real_escape_string($hospital_id);
-        $query = "SELECT * FROM blood_inventory WHERE hospital_id = '$hospital_id'";
-        $result = $this->conn->query($query);
-        $data = [];
-        while ($row = $result->fetch_assoc()) {
-            $data[] = $row;
-        }
-        return ["success" => true, "data" => $data];
-    }
-
-    public function addOrUpdateUnits($hospital_id, $blood_group, $units) {
-        $hospital_id = $this->conn->real_escape_string($hospital_id);
-        $blood_group = $this->conn->real_escape_string($blood_group);
-        $units = (int)$units;
-
-        $check_query = "SELECT id, units FROM blood_inventory WHERE hospital_id = '$hospital_id' AND blood_group = '$blood_group'";
-        $result = $this->conn->query($check_query);
-
-        if ($result->num_rows > 0) {
-            $query = "UPDATE blood_inventory SET units = units + $units WHERE hospital_id = '$hospital_id' AND blood_group = '$blood_group'";
-        } else {
-            $query = "INSERT INTO blood_inventory (hospital_id, blood_group, units) VALUES ('$hospital_id', '$blood_group', $units)";
-        }
-
-        if ($this->conn->query($query)) {
-            return ["success" => true, "message" => "Inventory updated successfully."];
-        }
-        return ["success" => false, "message" => "Failed to update inventory: " . $this->conn->error];
+    public function addUnits(int $hospitalId, string $bloodGroup, int $units): bool {
+        $stmt = $this->conn->prepare(
+            "INSERT INTO blood_inventory (hospital_id, blood_group, units)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE units = units + VALUES(units)"
+        );
+        $stmt->bind_param("isi", $hospitalId, $bloodGroup, $units);
+        return $stmt->execute();
     }
 }
-
-$database = new Database();
-$db = $database->getConnection();
-$inventory = new Inventory($db);
 
 $method = $_SERVER['REQUEST_METHOD'];
+$db     = (new Database())->getConnection();
+$inv    = new Inventory($db);
+
+$validBloodGroups = ['A+','A-','B+','B-','AB+','AB-','O+','O-'];
 
 if ($method === 'GET') {
-    if (isset($_GET['hospital_id'])) {
-        echo json_encode($inventory->getHospitalInventory($_GET['hospital_id']));
-    } else {
-        echo json_encode($inventory->getPublicInventory());
+    if (isset($_GET['mine'])) {
+        $user = require_role('hospital');
+        json_response(['success' => true, 'data' => $inv->forHospital($user['id'])]);
     }
-} elseif ($method === 'POST') {
-    $data = json_decode(file_get_contents("php://input"), true);
-    if (!empty($data['hospital_id']) && !empty($data['blood_group']) && isset($data['units'])) {
-        echo json_encode($inventory->addOrUpdateUnits($data['hospital_id'], $data['blood_group'], $data['units']));
-    } else {
-        http_response_code(400);
-        echo json_encode(["success" => false, "message" => "Invalid input."]);
-    }
+    json_response(['success' => true, 'data' => $inv->publicList()]);
 }
-?>
+
+if ($method === 'POST') {
+    $user  = require_role('hospital');
+    $data  = read_json_body();
+    $bg    = $data['blood_group'] ?? '';
+    $units = (int)($data['units'] ?? 0);
+
+    if (!in_array($bg, $validBloodGroups, true)) {
+        json_response(['success' => false, 'message' => 'Invalid blood group.'], 400);
+    }
+    if ($units < 1) {
+        json_response(['success' => false, 'message' => 'Units must be at least 1.'], 400);
+    }
+
+    if ($inv->addUnits($user['id'], $bg, $units)) {
+        json_response(['success' => true, 'message' => 'Inventory updated.']);
+    }
+    json_response(['success' => false, 'message' => 'Failed to update inventory.'], 500);
+}
+
+json_response(['success' => false, 'message' => 'Method not allowed.'], 405);

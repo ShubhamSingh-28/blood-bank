@@ -1,100 +1,173 @@
 <?php
-header("Content-Type: application/json");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/db.php';
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit; }
-
-include_once '../config/db.php';
-
-class RequestManager {
+class Requests {
     private $conn;
+    public function __construct($db) { $this->conn = $db; }
 
-    public function __construct($db) {
-        $this->conn = $db;
+    private static array $compatibility = [
+        'O-'  => ['O-'],
+        'O+'  => ['O+', 'O-'],
+        'A-'  => ['A-', 'O-'],
+        'A+'  => ['A+', 'A-', 'O+', 'O-'],
+        'B-'  => ['B-', 'O-'],
+        'B+'  => ['B+', 'B-', 'O+', 'O-'],
+        'AB-' => ['AB-', 'A-', 'B-', 'O-'],
+        'AB+' => ['A+','A-','B+','B-','AB+','AB-','O+','O-'],
+    ];
+
+    public static function isEligible(?string $receiverBg, string $sampleBg): bool {
+        return $receiverBg !== null
+            && isset(self::$compatibility[$receiverBg])
+            && in_array($sampleBg, self::$compatibility[$receiverBg], true);
     }
 
-    public function getRequests($user_id, $role) {
-        $user_id = $this->conn->real_escape_string($user_id);
-        if ($role === 'hospital') {
-            $query = "SELECT r.*, u.name as receiver_name, u.blood_group as receiver_blood_group 
-                      FROM blood_requests r 
-                      JOIN users u ON r.receiver_id = u.id 
-                      WHERE r.hospital_id = '$user_id'";
-        } else {
-            $query = "SELECT r.*, u.name as hospital_name 
-                      FROM blood_requests r 
-                      JOIN users u ON r.hospital_id = u.id 
-                      WHERE r.receiver_id = '$user_id'";
-        }
-        
-        $result = $this->conn->query($query);
-        $data = [];
-        while ($row = $result->fetch_assoc()) {
-            $data[] = $row;
-        }
-        return ["success" => true, "data" => $data];
+    public function listForHospital(int $hospitalId): array {
+        $stmt = $this->conn->prepare(
+            "SELECT r.id, r.blood_group, r.status, r.request_date,
+                    u.name AS receiver_name, u.email AS receiver_email, u.blood_group AS receiver_blood_group
+             FROM blood_requests r
+             JOIN users u ON u.id = r.receiver_id
+             WHERE r.hospital_id = ?
+             ORDER BY r.request_date DESC"
+        );
+        $stmt->bind_param("i", $hospitalId);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     }
 
-    public function makeRequest($receiver_id, $hospital_id, $blood_group) {
-        $receiver_id = $this->conn->real_escape_string($receiver_id);
-        $hospital_id = $this->conn->real_escape_string($hospital_id);
-        $blood_group = $this->conn->real_escape_string($blood_group);
-
-        // Receiver cannot request for same blood sample from the same hospital multiple times if pending/approved
-        $check = $this->conn->query("SELECT id FROM blood_requests WHERE receiver_id='$receiver_id' AND hospital_id='$hospital_id' AND blood_group='$blood_group' AND status IN ('pending', 'approved')");
-        if ($check->num_rows > 0) {
-            return ["success" => false, "message" => "You have already requested this blood group from this hospital."];
-        }
-
-        $query = "INSERT INTO blood_requests (receiver_id, hospital_id, blood_group) VALUES ('$receiver_id', '$hospital_id', '$blood_group')";
-        if ($this->conn->query($query)) {
-            return ["success" => true, "message" => "Request sent successfully."];
-        }
-        return ["success" => false, "message" => "Failed to send request: " . $this->conn->error];
+    public function listForReceiver(int $receiverId): array {
+        $stmt = $this->conn->prepare(
+            "SELECT r.id, r.blood_group, r.status, r.request_date, u.name AS hospital_name
+             FROM blood_requests r
+             JOIN users u ON u.id = r.hospital_id
+             WHERE r.receiver_id = ?
+             ORDER BY r.request_date DESC"
+        );
+        $stmt->bind_param("i", $receiverId);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     }
 
-    public function updateStatus($request_id, $status) {
-        $request_id = $this->conn->real_escape_string($request_id);
-        $status = $this->conn->real_escape_string($status);
+    public function hasActiveRequest(int $receiverId, int $hospitalId, string $bloodGroup): bool {
+        $stmt = $this->conn->prepare(
+            "SELECT id FROM blood_requests
+             WHERE receiver_id = ? AND hospital_id = ? AND blood_group = ?
+               AND status IN ('pending','approved')"
+        );
+        $stmt->bind_param("iis", $receiverId, $hospitalId, $bloodGroup);
+        $stmt->execute();
+        return $stmt->get_result()->num_rows > 0;
+    }
 
-        $query = "UPDATE blood_requests SET status = '$status' WHERE id = '$request_id'";
-        if ($this->conn->query($query)) {
-            return ["success" => true, "message" => "Status updated to $status."];
+    public function create(int $receiverId, int $hospitalId, string $bloodGroup): bool {
+        $stmt = $this->conn->prepare(
+            "INSERT INTO blood_requests (receiver_id, hospital_id, blood_group) VALUES (?, ?, ?)"
+        );
+        $stmt->bind_param("iis", $receiverId, $hospitalId, $bloodGroup);
+        return $stmt->execute();
+    }
+
+    public function approve(int $requestId, int $hospitalId): array {
+        $this->conn->begin_transaction();
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT hospital_id, blood_group, status FROM blood_requests WHERE id = ? FOR UPDATE"
+            );
+            $stmt->bind_param("i", $requestId);
+            $stmt->execute();
+            $req = $stmt->get_result()->fetch_assoc();
+            if (!$req)                                   throw new Exception('Request not found.');
+            if ((int)$req['hospital_id'] !== $hospitalId) throw new Exception('Not your request.');
+            if ($req['status'] !== 'pending')             throw new Exception('Request already processed.');
+
+            $stmt = $this->conn->prepare(
+                "SELECT id, units FROM blood_inventory WHERE hospital_id = ? AND blood_group = ? FOR UPDATE"
+            );
+            $stmt->bind_param("is", $hospitalId, $req['blood_group']);
+            $stmt->execute();
+            $inv = $stmt->get_result()->fetch_assoc();
+            if (!$inv || (int)$inv['units'] < 1) throw new Exception('No units available to fulfill request.');
+
+            $stmt = $this->conn->prepare("UPDATE blood_inventory SET units = units - 1 WHERE id = ?");
+            $stmt->bind_param("i", $inv['id']);
+            $stmt->execute();
+
+            $stmt = $this->conn->prepare("UPDATE blood_requests SET status = 'approved' WHERE id = ?");
+            $stmt->bind_param("i", $requestId);
+            $stmt->execute();
+
+            $this->conn->commit();
+            return ['success' => true, 'message' => 'Request approved.'];
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            return ['success' => false, 'message' => $e->getMessage()];
         }
-        return ["success" => false, "message" => "Failed to update status."];
+    }
+
+    public function reject(int $requestId, int $hospitalId): bool {
+        $stmt = $this->conn->prepare(
+            "UPDATE blood_requests SET status = 'rejected'
+             WHERE id = ? AND hospital_id = ? AND status = 'pending'"
+        );
+        $stmt->bind_param("ii", $requestId, $hospitalId);
+        $stmt->execute();
+        return $stmt->affected_rows > 0;
     }
 }
-
-$database = new Database();
-$db = $database->getConnection();
-$requestManager = new RequestManager($db);
 
 $method = $_SERVER['REQUEST_METHOD'];
+$db     = (new Database())->getConnection();
+$repo   = new Requests($db);
 
 if ($method === 'GET') {
-    if (!empty($_GET['user_id']) && !empty($_GET['role'])) {
-        echo json_encode($requestManager->getRequests($_GET['user_id'], $_GET['role']));
-    } else {
-        http_response_code(400);
-        echo json_encode(["success" => false, "message" => "Missing parameters."]);
-    }
-} elseif ($method === 'POST') {
-    $data = json_decode(file_get_contents("php://input"), true);
-    if (!empty($data['receiver_id']) && !empty($data['hospital_id']) && !empty($data['blood_group'])) {
-        echo json_encode($requestManager->makeRequest($data['receiver_id'], $data['hospital_id'], $data['blood_group']));
-    } else {
-        http_response_code(400);
-        echo json_encode(["success" => false, "message" => "Invalid input."]);
-    }
-} elseif ($method === 'PUT') {
-    $data = json_decode(file_get_contents("php://input"), true);
-    if (!empty($data['id']) && !empty($data['status'])) {
-        echo json_encode($requestManager->updateStatus($data['id'], $data['status']));
-    } else {
-        http_response_code(400);
-        echo json_encode(["success" => false, "message" => "Invalid input."]);
-    }
+    $user = require_auth();
+    $data = $user['role'] === 'hospital'
+        ? $repo->listForHospital($user['id'])
+        : $repo->listForReceiver($user['id']);
+    json_response(['success' => true, 'data' => $data]);
 }
-?>
+
+if ($method === 'POST') {
+    $user        = require_role('receiver');
+    $data        = read_json_body();
+    $hospitalId  = (int)($data['hospital_id'] ?? 0);
+    $bloodGroup  = $data['blood_group'] ?? '';
+
+    if ($hospitalId <= 0 || $bloodGroup === '') {
+        json_response(['success' => false, 'message' => 'Invalid input.'], 400);
+    }
+    if (!Requests::isEligible($user['blood_group'], $bloodGroup)) {
+        json_response(['success' => false, 'message' => 'You are not eligible for this blood group.'], 403);
+    }
+    if ($repo->hasActiveRequest($user['id'], $hospitalId, $bloodGroup)) {
+        json_response(['success' => false, 'message' => 'You have already requested this blood group from this hospital.'], 409);
+    }
+    if ($repo->create($user['id'], $hospitalId, $bloodGroup)) {
+        json_response(['success' => true, 'message' => 'Request sent successfully.']);
+    }
+    json_response(['success' => false, 'message' => 'Failed to send request.'], 500);
+}
+
+if ($method === 'PUT') {
+    $user   = require_role('hospital');
+    $data   = read_json_body();
+    $id     = (int)($data['id']     ?? 0);
+    $status = $data['status']       ?? '';
+    if ($id <= 0) json_response(['success' => false, 'message' => 'Invalid request id.'], 400);
+
+    if ($status === 'approved') {
+        $res = $repo->approve($id, $user['id']);
+        json_response($res, $res['success'] ? 200 : 400);
+    }
+    if ($status === 'rejected') {
+        if ($repo->reject($id, $user['id'])) {
+            json_response(['success' => true, 'message' => 'Request rejected.']);
+        }
+        json_response(['success' => false, 'message' => 'Could not reject request.'], 400);
+    }
+    json_response(['success' => false, 'message' => 'Invalid status.'], 400);
+}
+
+json_response(['success' => false, 'message' => 'Method not allowed.'], 405);
